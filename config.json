@@ -1,0 +1,33 @@
+{   
+    "admin": {
+      "disabled": true
+    },
+    "logging": {
+        "logs": {
+            "default": {
+                "level": "DEBUG",
+                "writer": {
+                  "output": "stderr"
+                }
+            }
+        }
+    },
+    "apps": {
+      "wireguard": {
+       
+      },
+      "tls": {
+        "automation": {
+          "policies": [
+            {
+              "subjects": ["localhost"],
+              "issuer":{
+                "module": "internal"
+              },
+              "on_demand": true
+            }
+          ]
+        }
+      }
+    }
+  }
