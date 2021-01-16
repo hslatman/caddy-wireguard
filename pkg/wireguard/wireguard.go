@@ -18,13 +18,15 @@ import (
 	b64 "encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
 	"golang.zx2c4.com/wireguard/device"
@@ -45,12 +47,25 @@ func (WireGuard) CaddyModule() caddy.ModuleInfo {
 
 // WireGuard is an App that ... ;-)
 type WireGuard struct {
-	ctx    caddy.Context
-	logger *zap.Logger
+	ctx     caddy.Context
+	logger  *zap.Logger
+	httpApp *caddyhttp.App
 }
 
 // Provision sets up the WireGuard app.
 func (w *WireGuard) Provision(ctx caddy.Context) error {
+
+	// store some references
+	httpAppIface, err := ctx.App("http")
+	if err != nil {
+		return fmt.Errorf("getting http app: %v", err)
+	}
+	w.httpApp = httpAppIface.(*caddyhttp.App)
+
+	fmt.Println(w.httpApp.Servers)
+	for n, s := range w.httpApp.Servers {
+		fmt.Println(fmt.Sprintf("%s - %#+v", n, s))
+	}
 
 	w.ctx = ctx
 	w.logger = ctx.Logger(w)
@@ -112,30 +127,59 @@ func (w *WireGuard) Start() error {
 	// `, privateKeyHex, publicKeyHex)
 
 	// NOTE: format of the below is SUPER important; it breaks stuff if it isn't correct!
+	// 	config := fmt.Sprintf(`private_key=%s
+	// listen_port=51820
+	// public_key=%s
+	// allowed_ip=0.0.0.0/0
+	// persistent_keepalive_interval=25
+	// `, privateKeyHex, publicKeyHex)
+
+	listenPort := 51820
+
 	config := fmt.Sprintf(`private_key=%s
-listen_port=51820
+listen_port=%d
 public_key=%s
 allowed_ip=0.0.0.0/0
-persistent_keepalive_interval=25
-`, privateKeyHex, publicKeyHex)
+`, privateKeyHex, listenPort, publicKeyHex)
 
 	fmt.Println(config)
 
 	dev := device.NewDevice(tun, &device.Logger{logger, logger, logger})
 	dev.IpcSet(config)
 	dev.Up()
-	fmt.Println("HERE")
-	listener, err := tnet.ListenTCP(&net.TCPAddr{Port: 80})
-	if err != nil {
-		w.logger.Error(err.Error())
-	}
-	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		w.logger.Info(fmt.Sprintf("> %s - %s - %s", request.RemoteAddr, request.URL.String(), request.UserAgent()))
-		io.WriteString(writer, "Hello from userspace TCP!")
-	})
-	err = http.Serve(listener, nil)
-	if err != nil {
-		w.logger.Error(err.Error())
+	// TODO: mapping from the Caddy listeners to listeners here?
+	// Then do http/l4 proxying?
+
+	fmt.Println(w.httpApp.Servers)
+	for n, s := range w.httpApp.Servers {
+		//fmt.Println(fmt.Sprintf("%s - %#+v", n, s))
+		fmt.Println(fmt.Sprintf("serving: %s", n))
+
+		if n == "remaining_auto_https_redirects" {
+			continue
+		}
+
+		port, _ := strconv.Atoi(strings.Split(s.Listen[0], ":")[1])
+		listener, err := tnet.ListenTCP(&net.TCPAddr{Port: port})
+		if err != nil {
+			w.logger.Error(err.Error())
+		}
+
+		http.HandleFunc("/", s.ServeHTTP)
+
+		// http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		// 	w.logger.Info(fmt.Sprintf("> %s - %s - %s", request.RemoteAddr, request.URL.String(), request.UserAgent()))
+		// 	io.WriteString(writer, "Hello from userspace TCP!")
+		// })
+
+		//s.ServeHTTP()
+		go func() {
+			err = http.Serve(listener, nil)
+			if err != nil {
+				w.logger.Error(err.Error())
+			}
+		}()
+
 	}
 
 	// 	logger := log.New(os.Stderr, "", log.LstdFlags)
